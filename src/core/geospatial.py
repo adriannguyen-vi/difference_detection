@@ -50,6 +50,26 @@ class GeospatialMapper:
 
         src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
         dst_pts = np.float32([kp_ortho[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+        # Visualize matches on a cropped ortho image to highlight the region and save image size
+        min_x, min_y = np.int32(dst_pts.min(axis=0).ravel())
+        max_x, max_y = np.int32(dst_pts.max(axis=0).ravel())
+        
+        pad = 500
+        h_ortho, w_ortho = ortho_img.shape[:2]
+        min_x = int(max(0, min_x - pad))
+        min_y = int(max(0, min_y - pad))
+        max_x = int(min(w_ortho, max_x + pad))
+        max_y = int(min(h_ortho, max_y + pad))
+
+        ortho_crop = ortho_img[min_y:max_y, min_x:max_x]
+        kp_ortho_adjusted = [cv2.KeyPoint(float(kp.pt[0] - min_x), float(kp.pt[1] - min_y), float(kp.size)) for kp in kp_ortho]
+        
+        match_img = cv2.drawMatches(img_ref, kp_ref, ortho_crop, kp_ortho_adjusted, good_matches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+        match_output_path = os.path.join(self.output_dir, output_filename)
+        cv2.imwrite(match_output_path, match_img)
+        logging.info(f"Matching visualization saved to {match_output_path}")
+
         M_ortho, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
 
         if M_ortho is None:
