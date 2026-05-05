@@ -149,7 +149,11 @@ class SiteChangeProcessor:
                 out_video.write(np.hstack((vis_ref, vis_curr, vis_overlay)))
 
             if self.geo_mapper:
-                self.geo_mapper.map_contours_to_ortho(img_ref, fixed_contours, f"ortho_map_ref_{item['frame_index']}.jpg")
+                gps_info = {
+                    "latitude": item.get("latitude"),
+                    "longitude": item.get("longitude")
+                }
+                self.geo_mapper.map_contours_to_ortho(img_ref, fixed_contours, f"ortho_map_ref_{item['frame_index']}.jpg", gps_info=gps_info)
 
         cap.release()
         out_video.release()
