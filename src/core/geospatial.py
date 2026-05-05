@@ -11,7 +11,7 @@ class GeospatialMapper:
         self.ortho_image_path = ortho_image_path
         self.output_dir = output_dir
 
-    def map_contours_to_ortho(self, img_ref, valid_contours, output_filename="ortho_overlay.jpg"):
+    def map_contours_to_ortho(self, img_ref, valid_contours, output_filename="ortho_overlay.jpg", gps_info=None):
         """
         Maps detected tree-cutting contours from img_ref space onto a WebODM Orthomosaic.
         """
@@ -28,7 +28,45 @@ class GeospatialMapper:
         logging.info("Detecting keypoints for Ortho mapping...")
         sift = cv2.SIFT_create(nfeatures=200000)
         gray_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2GRAY)
-        gray_ortho = cv2.cvtColor(ortho_img, cv2.COLOR_BGR2GRAY)
+        gray_ortho_full = cv2.cvtColor(ortho_img, cv2.COLOR_BGR2GRAY)
+
+        # Localize search window if GPS info is provided
+        start_col, start_row = 0, 0
+        gray_ortho = gray_ortho_full
+        
+        if gps_info and gps_info.get("latitude") and gps_info.get("longitude"):
+            lat = gps_info["latitude"]
+            lon = gps_info["longitude"]
+            try:
+                with rasterio.open(self.ortho_image_path) as src:
+                    transform_matrix, crs = src.transform, src.crs
+                    
+                    # Convert lat, lon to the Ortho Image CRS
+                    if crs.to_string() != "EPSG:4326":
+                        xs, ys = transform('EPSG:4326', crs, [lon], [lat])
+                        target_x, target_y = xs[0], ys[0]
+                    else:
+                        target_x, target_y = lon, lat
+
+                    row, col = src.index(target_x, target_y)
+                    
+                    h_ortho, w_ortho = gray_ortho_full.shape
+                    
+                    # Define local window size (e.g., 2000x2000)
+                    window_size = 2000
+                    half_w = window_size // 2
+                    
+                    start_row = max(0, row - half_w)
+                    end_row = min(h_ortho, row + half_w)
+                    start_col = max(0, col - half_w)
+                    end_col = min(w_ortho, col + half_w)
+
+                    logging.info(f"GPS found. Cropping Ortho image to local window: start_row={start_row}, end_row={end_row}, start_col={start_col}, end_col={end_col}")
+                    gray_ortho = gray_ortho_full[start_row:end_row, start_col:end_col]
+                    color_ortho_crop = ortho_img[start_row:end_row, start_col:end_col]
+                    cv2.imwrite("./debug_dir/crop_ortho_img.png", color_ortho_crop)
+            except Exception as e:
+                logging.info(f"Failed to crop local window using GPS: {e}")
 
         kp_ref, des_ref = sift.detectAndCompute(gray_ref, None)
         kp_ortho, des_ortho = sift.detectAndCompute(gray_ortho, None)
@@ -49,7 +87,13 @@ class GeospatialMapper:
         logging.info(f"Found {len(good_matches)} good matches. Calculating Homography...")
 
         src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp_ortho[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        dst_pts_local = np.float32([kp_ortho[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        
+        # Offset destination points by the crop window's top-left corner
+        dst_pts = np.empty_like(dst_pts_local)
+        dst_pts[:, 0, 0] = dst_pts_local[:, 0, 0] + start_col
+        dst_pts[:, 0, 1] = dst_pts_local[:, 0, 1] + start_row
+
         M_ortho, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
 
         if M_ortho is None:
