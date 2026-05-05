@@ -68,6 +68,12 @@ class GeospatialMapper:
             except Exception as e:
                 logging.info(f"Failed to crop local window using GPS: {e}")
 
+        # Enhance image contrast to improve keypoint detection quality
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray_ref = clahe.apply(gray_ref)
+        if gray_ortho is not None and gray_ortho.size > 0:
+            gray_ortho = clahe.apply(gray_ortho)
+
         kp_ref, des_ref = sift.detectAndCompute(gray_ref, None)
         kp_ortho, des_ortho = sift.detectAndCompute(gray_ortho, None)
 
@@ -78,7 +84,14 @@ class GeospatialMapper:
         flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
         logging.info("Matching features...")
         matches = flann.knnMatch(des_ref, des_ortho, k=2)
-        good_matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
+        
+        # Stricter Lowe's ratio test for better quality
+        good_matches = []
+        for match in matches:
+            if len(match) == 2:
+                m, n = match
+                if m.distance < 0.7 * n.distance:
+                    good_matches.append(m)
 
         if len(good_matches) < 10:
             logging.info(f"Not enough good matches found ({len(good_matches)}/10).")
@@ -89,9 +102,25 @@ class GeospatialMapper:
         src_pts = np.float32([kp_ref[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
         dst_pts = np.float32([kp_ortho[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
 
+        # Compute Homography first to filter outliers out as RANSAC inliers
+        M_ortho, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+        if M_ortho is None:
+            logging.info("Failed to compute Homography matrix for Ortho mapping.")
+            return
+
+        # Keep only inlier matches for clean high-quality visualization
+        matches_mask = mask.ravel().tolist()
+        inlier_matches = [good_matches[i] for i in range(len(good_matches)) if matches_mask[i]]
+        
+        if len(inlier_matches) < 4:
+            logging.info("Not enough inliers found after Homography filtering.")
+            return
+
         # Visualize matches on a cropped ortho image to highlight the region and save image size
-        min_x, min_y = np.int32(dst_pts.min(axis=0).ravel())
-        max_x, max_y = np.int32(dst_pts.max(axis=0).ravel())
+        inlier_dst_pts = np.float32([kp_ortho[m.trainIdx].pt for m in inlier_matches]).reshape(-1, 1, 2)
+        min_x, min_y = np.int32(inlier_dst_pts.min(axis=0).ravel())
+        max_x, max_y = np.int32(inlier_dst_pts.max(axis=0).ravel())
         
         pad = 500
         h_ortho, w_ortho = ortho_img.shape[:2]
@@ -103,16 +132,10 @@ class GeospatialMapper:
         ortho_crop = ortho_img[min_y:max_y, min_x:max_x]
         kp_ortho_adjusted = [cv2.KeyPoint(float(kp.pt[0] - min_x), float(kp.pt[1] - min_y), float(kp.size)) for kp in kp_ortho]
         
-        match_img = cv2.drawMatches(img_ref, kp_ref, ortho_crop, kp_ortho_adjusted, good_matches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
-        match_output_path = os.path.join(self.output_dir, output_filename)
+        match_img = cv2.drawMatches(img_ref, kp_ref, ortho_crop, kp_ortho_adjusted, inlier_matches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+        match_output_path = os.path.join(self.output_dir, output_filename.replace('.jpg', '_matches.jpg'))
         cv2.imwrite(match_output_path, match_img)
-        logging.info(f"Matching visualization saved to {match_output_path}")
-
-        M_ortho, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-
-        if M_ortho is None:
-            logging.info("Failed to compute Homography matrix for Ortho mapping.")
-            return
+        logging.info(f"Matching High-Quality visualization saved to {match_output_path}")
 
         warped_contours = [np.int32(cv2.perspectiveTransform(np.float32(cnt), M_ortho)) for cnt in valid_contours]
         self.export_geojson(warped_contours, output_filename.replace(".jpg", ".geojson"))
