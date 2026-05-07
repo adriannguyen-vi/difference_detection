@@ -145,7 +145,7 @@ def extract_valid_contours_sam3(img_aligned, img_ref, sam_client=None, sensitivi
 
 def extract_valid_contours_combined(img_aligned, img_ref, sam_client=None, sensitivity_threshold=100, min_area=0.01, max_area=0.40):
     if sam_client is None:
-        from core.sam_client import SAM3Client
+        from core.sam3_client import SAM3Client
         sam_client = SAM3Client()
 
     gray_ref = cv2.cvtColor(img_ref, cv2.COLOR_BGR2GRAY)
@@ -232,7 +232,6 @@ def extract_valid_contours_combined(img_aligned, img_ref, sam_client=None, sensi
             tree_cutting_contours.append(cnt)
 
     return tree_cutting_contours
-
 
 
 def extract_valid_contours_variance(img_aligned, img_ref, sensitivity_threshold=100, min_area=0.01, max_area=0.40):
